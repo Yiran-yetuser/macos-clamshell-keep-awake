@@ -184,7 +184,7 @@ start_hd() {
   if "$BIN_DIR/mirror" "$vid" >>"$LOG" 2>&1; then
     /bin/sleep 1
     /bin/echo "$vid" >"$HD_ACTIVE" 2>/dev/null
-    log "高清投屏已生效（16:10 · ${HD_W}×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理，始终启用=${ALWAYS_HD}）"
+    log "高清投屏已生效（${HD_W}×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理，始终启用=${ALWAYS_HD}）"
     return 0
   fi
   log "镜像失败，放弃本次高清投屏（详见日志）"
@@ -233,10 +233,47 @@ cleanup_stale() {
   /bin/rm -f "$VDISP_PIDFILE" "$VDISP_IDFILE"
 }
 
+# ── 远程会话检测：UU 出站流量 + 显示抓取状态双信号 ─────────────────
+uu_pid() { /usr/bin/pgrep -f "UURemoteServer" 2>/dev/null | /usr/bin/head -1; }
+
+uu_bytes_out() {
+  local p
+  p="$(uu_pid)"
+  [ -n "$p" ] || { /bin/echo "-1"; return; }
+  /usr/bin/nettop -P -x -l 1 -p "$p" 2>/dev/null \
+    | /usr/bin/awk 'NR>1 && $2 ~ /^UURemote/ {v=$4} END {if (v=="") v="-1"; print v}'
+}
+
+remote_viewing() {
+  local p b1 b2 d cap
+  p="$(uu_pid)"
+  [ -n "$p" ] || return 1
+  b1="$(uu_bytes_out)"
+  [ "${b1:--1}" = "-1" ] && return 1
+  /bin/sleep 1
+  b2="$(uu_bytes_out)"
+  [ "${b2:--1}" = "-1" ] && return 1
+  d=$(( b2 - b1 ))
+  [ "$d" -ge "${REMOTE_MIN_BYTES:-120000}" ] && return 0
+  if [ -x "$BIN_DIR/capprobe" ]; then
+    cap="$("$BIN_DIR/capprobe" 2>/dev/null | /usr/bin/awk '/captured=1/{n++} END{print n+0}')"
+    [ "${cap:-0}" -gt 0 ] && return 0
+  fi
+  return 1
+}
+
+local_active() {
+  local ns
+  ns="$(/usr/sbin/ioreg -c IOHIDSystem 2>/dev/null | /usr/bin/awk '/HIDIdleTime/ {print $NF; exit}')"
+  [ -n "$ns" ] || return 1
+  [ "$ns" -lt "${LOCAL_ACTIVE_NS:-3000000000}" ] 2>/dev/null && return 0
+  return 1
+}
+
 load_hd_conf
 cleanup_stale
 if [ "$HD_ENABLED" = "1" ]; then
-  log "合盖画面守护启动（盖子=$(clamshell)，亮度=$(brightness)，高清投屏 ${HD_W}×${HD_H}（16:10 → 物理 $((HD_W*2))×$((HD_H*2))），始终启用=$ALWAYS_HD）"
+  log "合盖画面守护启动（盖子=$(clamshell)，亮度=$(brightness)，高清投屏 ${HD_W}×${HD_H}（物理 $((HD_W*2))×$((HD_H*2))），始终启用=$ALWAYS_HD，远程自动开关=1）"
 else
   log "合盖画面守护启动（盖子=$(clamshell)，亮度=$(brightness)，高清投屏已关闭，只关背光）"
 fi
@@ -280,7 +317,43 @@ while :; do
   else
     # ── 开盖：默认保持 16:10（远程端比例一致）；lidonly 模式则复原 ──
     if [ "$HD_ENABLED" = "1" ] && [ "$ALWAYS_HD" = "1" ]; then
-      ensure_hd || true
+      # 开盖时：本机有人操作 > 远程正在看 > 都没有就恢复本机屏幕
+      if local_active; then
+        want=0; why="本机有人操作"
+      elif remote_viewing; then
+        want=1; why="远程正在观看"
+      else
+        want=0; why="没有远程会话"
+      fi
+      prev_want="${last_hd_want:-}"
+      if [ "$want" = "1" ]; then
+        hd_off_streak=0
+        if [ "$prev_want" != "1" ]; then
+          log "开盖：$why，启用高清投屏"
+          last_hd_want=1
+        fi
+        ensure_hd || true
+      else
+        hd_off_streak=$(( ${hd_off_streak:-0} + 1 ))
+        if [ "$hd_off_streak" -ge "${HD_OFF_TRIGGER:-2}" ] && { [ -f "$HD_ACTIVE" ] || vdisp_alive; }; then
+          log "开盖：$why，恢复本机屏幕（关闭高清投屏）"
+          last_hd_want=0
+          stop_hd
+          if [ -f "$SAVED_BR" ]; then restore_screen; else
+            b="$(brightness)"
+            if [ -z "$b" ] && [ -s "$LAST_BR" ]; then
+              "$BIN_DIR/setbright" "$(/bin/cat "$LAST_BR")" >/dev/null 2>&1
+            fi
+          fi
+          hd_off_streak=0
+        elif [ "$want" = "0" ] && [ ! -f "$HD_ACTIVE" ]; then
+          if [ "${last_hd_want:-}" != "0" ]; then
+            log "开盖：$why（虚拟屏已关闭，本机屏幕正常）"
+            last_hd_want=0
+          fi
+          hd_off_streak=0
+        fi
+      fi
     else
       if [ -f "$HD_ACTIVE" ] || vdisp_alive; then stop_hd; fi
       [ -f "$SAVED_BR" ] && restore_screen

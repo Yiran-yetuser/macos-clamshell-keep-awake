@@ -1,3 +1,6 @@
 # 运行时生成的文件不进版本库
 logs/*
 !logs/.gitkeep
+
+# 应用构建产物（可用 build-app.sh 重新生成）
+合盖不休眠.app/
