@@ -165,3 +165,138 @@ APPLESCRIPT
   printf '%s' "$out"
   return $rc
 }
+
+# 以管理员权限运行本目录下的某个脚本（脚本内部自己做 root 操作，输出是脚本的 stdout）
+# 注意：桌面目录受 macOS TCC 保护，root 下的 osascript 直接执行桌面上的脚本会报
+#      “Operation not permitted”，所以这里先复制到 /tmp 再执行。
+# 用法: out=$(run_admin_script "/绝对路径/脚本.sh" "提示文字")  ; rc=$?
+run_admin_script() {
+  local script="$1" prompt="$2" out rc tmp
+  tmp="$(/usr/bin/mktemp /tmp/yz-admin-XXXXXX.sh 2>/dev/null)" || tmp="/tmp/yz-admin-$$.sh"
+  /bin/cp "$script" "$tmp" && /bin/chmod 755 "$tmp"
+  out="$(/usr/bin/osascript 2>&1 <<APPLESCRIPT
+do shell script "/bin/bash '${tmp}'" with administrator privileges with prompt "${prompt}"
+APPLESCRIPT
+)"
+  rc=$?
+  /bin/rm -f "$tmp"
+  printf '%s' "$out"
+  return $rc
+}
+
+# 合盖不休眠守护进程是否在运行：输出 running / missing
+keepawake_daemon() {
+  if /bin/launchctl print system/com.yyz.keepawake >/dev/null 2>&1; then
+    printf 'running'
+  else
+    printf 'missing'
+  fi
+}
+
+# 读取守护进程记录下来的「开关被别人改回 0」日志（最近 N 行），没有则输出空
+keepawake_drift_log() {
+  local n="${1:-3}"
+  [ -r /var/log/yz-keepawake.log ] && /usr/bin/tail -n "$n" /var/log/yz-keepawake.log 2>/dev/null
+}
+
+# ── 合盖画面守护（用户级 LaunchAgent：虚拟屏 + 背光控制）─────────────
+# 运行数据放在 ~/Library/Application Support/yz-keepawake（不受桌面 TCC 限制）
+support_dir() { printf '%s/Library/Application Support/yz-keepawake' "$HOME"; }
+
+# 合盖画面守护是否在运行：running / missing
+lidwatch_status() {
+  if /bin/launchctl print "gui/$(/usr/bin/id -u)/com.yyz.lidawake" >/dev/null 2>&1; then
+    printf 'running'
+  else
+    printf 'missing'
+  fi
+}
+
+# 虚拟屏进程状态：running / stopped
+vdisp_running() {
+  local p
+  p="$(/bin/cat "$(support_dir)/vdisp.pid" 2>/dev/null)"
+  if [ -n "$p" ] && /bin/kill -0 "$p" 2>/dev/null; then
+    printf 'running'
+  else
+    printf 'stopped'
+  fi
+}
+
+# 当前显示亮度（0.000 ~ 1.000），拿不到输出空
+display_brightness() { "$(support_dir)/bin/setbright" 2>/dev/null; }
+
+# 合盖画面守护日志最近 N 行
+lidwatch_log() {
+  local n="${1:-5}"
+  /usr/bin/tail -n "$n" "$(support_dir)/logs/合盖画面守护.log" 2>/dev/null
+}
+
+# 安装/更新合盖画面守护（用户级，不需要管理员密码）
+# 会把 bin/ 下的工具和 .lidwatch.sh 复制到 Application Support，并注册 LaunchAgent
+install_lidwatch() {
+  local sup plist uid
+  sup="$(support_dir)"
+  uid="$(/usr/bin/id -u)"
+  /bin/mkdir -p "$sup/bin" "$sup/logs" "$HOME/Library/LaunchAgents" || return 1
+  /bin/cp -f "$TOOL_DIR/bin/vdisp" "$TOOL_DIR/bin/setbright" "$sup/bin/" || return 1
+  /bin/chmod 755 "$sup/bin/vdisp" "$sup/bin/setbright" 2>/dev/null
+  /bin/cp -f "$TOOL_DIR/.lidwatch.sh" "$sup/lidwatch.sh" || return 1
+  /bin/chmod 755 "$sup/lidwatch.sh" 2>/dev/null
+  plist="$HOME/Library/LaunchAgents/com.yyz.lidawake.plist"
+  cat >"$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yyz.lidawake</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${sup}/lidwatch.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>${sup}/logs/lidwatch.out</string>
+  <key>StandardErrorPath</key>
+  <string>${sup}/logs/lidwatch.err</string>
+</dict>
+</plist>
+PLIST
+  /bin/launchctl bootout "gui/$uid/com.yyz.lidawake" >/dev/null 2>&1
+  /bin/launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null || return 1
+  printf 'ok'
+}
+
+# 卸载合盖画面守护：停止 LaunchAgent、清理残留虚拟屏、恢复背光
+uninstall_lidwatch() {
+  local sup plist uid p saved
+  sup="$(support_dir)"
+  uid="$(/usr/bin/id -u)"
+  plist="$HOME/Library/LaunchAgents/com.yyz.lidawake.plist"
+  /bin/launchctl bootout "gui/$uid/com.yyz.lidawake" >/dev/null 2>&1
+  /bin/sleep 1   # launchctl bootout 是异步的，等一下再删配置
+  /bin/rm -f "$plist"
+  p="$(/bin/cat "$sup/vdisp.pid" 2>/dev/null)"
+  if [ -n "$p" ] && /bin/kill -0 "$p" 2>/dev/null; then
+    /bin/kill -9 "$p" 2>/dev/null
+  fi
+  /bin/rm -f "$sup/vdisp.pid"
+  saved="$(/bin/cat "$sup/brightness.saved" 2>/dev/null)"
+  if [ -n "$saved" ]; then
+    "$sup/bin/setbright" "$saved" >/dev/null 2>&1
+    /bin/rm -f "$sup/brightness.saved"
+  fi
+  printf 'ok'
+}
+

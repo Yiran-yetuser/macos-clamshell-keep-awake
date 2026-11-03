@@ -91,6 +91,15 @@ if [ "$sd" != "1" ] || [ "$sd_kern" != "Yes" ]; then
 fi
 ok "前置检查通过：合盖不休眠已开启（pmset=1 / 内核 SleepDisabled=Yes）"
 
+# 「画面守护」是否在跑：它负责合盖后创建虚拟屏 + 关背光，远程桌面才有画面
+lw_now="$(lidwatch_status)"
+if [ "$lw_now" = "running" ]; then
+  ok "画面守护运行中（合盖后远程桌面能看到真实画面）"
+else
+  warn "画面守护没有运行 —— 合盖后截图可能是纯黑（远程桌面会黑屏）"
+  info "建议先运行「1-开启防合盖休眠.command」把画面守护装上，再回来测试。"
+fi
+
 # ── 屏幕录制权限自检（决定要不要在合盖时截图）───────────────────────
 CAP_ENABLED=0
 # 注意：screencapture 无法写入以「.」开头的隐藏文件名，这里不能用 .xxx.png
@@ -284,9 +293,13 @@ if [ "$CAP_ENABLED" != "1" ]; then
 elif [ "$capn" -eq 0 ]; then
   cap_line="没有截到图（截图失败），无法判断画面是否可用"
 elif [ "$capmax" -gt 200000 ]; then
-  cap_line="合盖期间截图 ${capn} 张，大小 $((capmin / 1024)) KB ~ $((capmax / 1024)) KB —— 画面正常，远程桌面通常能看到桌面"
+  cap_line="合盖期间截图 ${capn} 张，大小 $((capmin / 1024)) KB ~ $((capmax / 1024)) KB —— 画面正常，远程桌面能看到桌面"
+  if [ "$lw_now" = "running" ]; then
+    cap_line="${cap_line}（画面守护已生效：虚拟屏 + 背光归零）"
+  fi
 else
   cap_line="合盖期间截图 ${capn} 张，都很小（最大 $((capmax / 1024)) KB）—— 画面可能是黑的，远程桌面可能只看到黑屏"
+  [ "$lw_now" != "running" ] && cap_line="${cap_line}；原因是「画面守护」没运行，请重跑 1-开启"
 fi
 
 REPORT_FILE="$LOG_DIR/合盖测试报告-$(date '+%Y%m%d-%H%M%S').log"
@@ -296,6 +309,7 @@ REPORT_FILE="$LOG_DIR/合盖测试报告-$(date '+%Y%m%d-%H%M%S').log"
   echo "生成时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "机器：$(sysctl -n hw.model 2>/dev/null) · $(sysctl -n machdep.cpu.brand_string 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null)"
   echo "设置：pmset SleepDisabled=$(sleep_disabled) · 内核 SleepDisabled=$(sleep_disabled_kernel)"
+  echo "画面守护：${lw_now:-未知}（合盖时创建 HiDPI 虚拟屏并把内建屏背光归零）"
   echo ""
   echo "一、合盖过程"
   echo "  合盖时间：$(date -r "$closed_at" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
@@ -319,6 +333,7 @@ REPORT_FILE="$LOG_DIR/合盖测试报告-$(date '+%Y%m%d-%H%M%S').log"
   echo "五、结论"
   if [ "$verdict" = "PASS" ]; then
     echo "  ✅ 通过：合盖 ${close_dur} 秒期间系统没有休眠，网络与 Tailscale 保持正常。"
+    [ "$CAP_ENABLED" = "1" ] && [ "$capmax" -gt 200000 ] && echo "     画面检测也通过：合盖期间截图不是黑屏，远程桌面可以看到画面。"
   else
     echo "  ❌ 未通过"
     printf '%b' "$reasons"

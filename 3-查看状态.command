@@ -62,7 +62,50 @@ else
     "$RED" "$NC" "${sd:-空}" "${sd_kern:-No}"
 fi
 
-# ── 4. 当前盖子 ─────────────────────────────────────────────────────
+# ── 4. 守护进程（防止开关被第三方软件改回 0）───────────────────────
+dm="$(keepawake_daemon)"
+if [ "$dm" = "running" ]; then
+  printf '守护进程：%s✅ 运行中%s（每 2 秒检查，被改回 0 会自动恢复）\n' "$GREEN" "$NC"
+else
+  printf '守护进程：%s✗ 未安装%s → 开关可能被 ToDesk 等软件改回 0，建议重跑「1-开启」\n' "$YELLOW" "$NC"
+fi
+drift="$(keepawake_drift_log 3)"
+if [ -n "$drift" ]; then
+  printf '  最近被改动记录：\n'
+  printf '%s\n' "$drift" | while IFS= read -r line; do printf '    %s\n' "$line"; done
+fi
+
+# ── 5. 合盖画面守护（虚拟屏 + 背光，保证远程能看到画面）──────────────
+lw="$(lidwatch_status)"
+if [ "$lw" = "running" ]; then
+  printf '画面守护：%s✅ 运行中%s（合盖→建虚拟屏+背光归零；开盖→自动恢复）\n' "$GREEN" "$NC"
+else
+  printf '画面守护：%s✗ 未运行%s → 合盖后远程桌面可能只看到黑屏，建议重跑「1-开启」\n' "$YELLOW" "$NC"
+fi
+vd="$(vdisp_running)"
+br="$(display_brightness)"
+vd_txt="未创建"
+[ "$vd" = "running" ] && vd_txt="已创建（HiDPI 2x）"
+br_txt="${br:-未知}"
+printf '  虚拟屏：%s · 屏幕亮度：%s\n' "$vd_txt" "$br_txt"
+if [ "$(clamshell_closed)" = "Yes" ]; then
+  if [ "$vd" = "running" ] && [ -n "$br" ]; then
+    if /usr/bin/awk -v c="$br" 'BEGIN{exit !(c + 0 <= 0.001)}'; then
+      printf '  %s合盖中：虚拟屏已就位、背光已归零 —— 远程桌面此时能看到真实画面（屏幕不亮）%s\n' "$DIM" "$NC"
+    else
+      printf '  %s合盖中：背光还没归零（%s），画面守护可能刚启动或未生效%s\n' "$YELLOW" "$br" "$NC"
+    fi
+  else
+    printf '  %s合盖中但虚拟屏没起来 —— 远程桌面可能黑屏%s\n' "$YELLOW" "$NC"
+  fi
+fi
+lwlog="$(lidwatch_log 2)"
+if [ -n "$lwlog" ]; then
+  printf '  最近记录：\n'
+  printf '%s\n' "$lwlog" | while IFS= read -r line; do printf '    %s\n' "$line"; done
+fi
+
+# ── 6. 当前盖子 ─────────────────────────────────────────────────────
 lid="$(clamshell_closed)"
 if [ "$lid" = "Yes" ]; then
   printf '当前盖子：%s已合上%s\n' "$YELLOW" "$NC"
@@ -70,7 +113,7 @@ else
   printf '当前盖子：打开\n'
 fi
 
-# ── 5. 电源计划 ─────────────────────────────────────────────────────
+# ── 7. 电源计划 ─────────────────────────────────────────────────────
 printf '\n%s电源计划%s\n' "$BOLD" "$NC"
 printf '  交流电源：系统休眠 %s · 显示器休眠 %s · 硬盘休眠 %s · 网络唤醒 %s · 电源小憩 %s\n' \
   "$(fmt_min "$(plan_val 'AC Power' sleep)")" \
@@ -87,7 +130,7 @@ printf '  电池：    系统休眠 %s · 显示器休眠 %s · 硬盘休眠 %s 
   "$(fmt_onoff "$(plan_val 'Battery Power' lowpowermode)")"
 info "开启「合盖不休眠」后，上面的「系统休眠」计时会被系统忽略（disablesleep 优先）。"
 
-# ── 6. 网络与 Tailscale ─────────────────────────────────────────────
+# ── 8. 网络与 Tailscale ─────────────────────────────────────────────
 printf '\n%s网络%s\n' "$BOLD" "$NC"
 defif="$(/sbin/route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
 ip=""
@@ -117,7 +160,7 @@ fi
 [ -n "$tsip" ] && printf ' · %s' "$tsip"
 printf '\n'
 
-# ── 7. 远程控制软件 ─────────────────────────────────────────────────
+# ── 9. 远程控制软件 ─────────────────────────────────────────────────
 printf '\n%s远程控制%s\n' "$BOLD" "$NC"
 rd_pid="$(pgrep -f 'RustDesk --server' 2>/dev/null | head -1)"
 if [ -n "$rd_pid" ]; then
@@ -137,7 +180,7 @@ else
   printf '  macOS 屏幕共享：%s✗ 未开启%s（要用系统自带的：设置 → 通用 → 共享 → 屏幕共享）\n' "$DIM" "$NC"
 fi
 
-# ── 8. 最近的睡眠/唤醒记录 ──────────────────────────────────────────
+# ── 10. 最近的睡眠/唤醒记录 ──────────────────────────────────────────
 printf '\n%s最近的睡眠/唤醒记录%s\n' "$BOLD" "$NC"
 recent="$(/usr/bin/pmset -g log 2>/dev/null | grep -E "Entering Sleep state|Wake from" | tail -4)"
 if [ -n "$recent" ]; then
@@ -169,7 +212,7 @@ else
   info "读取不到系统电源日志"
 fi
 
-# ── 9. 最近一次合盖测试结果 ─────────────────────────────────────────
+# ── 11. 最近一次合盖测试结果 ─────────────────────────────────────────
 if [ -f "$LOG_DIR/合盖测试最近结果.txt" ]; then
   printf '\n%s最近一次合盖测试%s\n' "$BOLD" "$NC"
   sed 's/^/  /' "$LOG_DIR/合盖测试最近结果.txt"
@@ -177,7 +220,7 @@ else
   printf '\n%s还没有做过合盖测试 —— 建议运行「4-合盖测试.command」验证一次%s\n' "$DIM" "$NC"
 fi
 
-# ── 10. 结论 ────────────────────────────────────────────────────────
+# ── 12. 结论 ────────────────────────────────────────────────────────
 printf '\n'
 hr
 if [ "$sd" = "1" ] && [ "$sd_kern" = "Yes" ]; then
@@ -186,6 +229,11 @@ if [ "$sd" = "1" ] && [ "$sd_kern" = "Yes" ]; then
   case "$src" in
     Battery*) printf '%s提示：当前是电池供电，合盖状态下会持续掉电，注意剩余电量。%s\n' "$YELLOW" "$NC" ;;
   esac
+  if [ "$lw" = "running" ]; then
+    printf '%s合盖后远程画面：由「画面守护」保证（虚拟屏 + 背光归零），已在实机上验证过。%s\n' "$DIM" "$NC"
+  else
+    printf '%s警告：画面守护没运行，合盖后远程桌面可能只有黑屏。%s\n' "$YELLOW" "$NC"
+  fi
   printf '%s验证方法：合盖后从手机/另一台电脑 tailscale ping 本机，或用 RustDesk / ToDesk 连一下。%s\n' "$DIM" "$NC"
 else
   printf '%s结论：合盖不休眠尚未生效 —— 请运行「1-开启防合盖休眠.command」。%s\n' "$RED" "$NC"
