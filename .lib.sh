@@ -239,8 +239,8 @@ install_lidwatch() {
   sup="$(support_dir)"
   uid="$(/usr/bin/id -u)"
   /bin/mkdir -p "$sup/bin" "$sup/logs" "$HOME/Library/LaunchAgents" || return 1
-  /bin/cp -f "$TOOL_DIR/bin/vdisp" "$TOOL_DIR/bin/setbright" "$sup/bin/" || return 1
-  /bin/chmod 755 "$sup/bin/vdisp" "$sup/bin/setbright" 2>/dev/null
+  /bin/cp -f "$TOOL_DIR/bin/vdisp" "$TOOL_DIR/bin/setbright" "$TOOL_DIR/bin/mirror" "$sup/bin/" || return 1
+  /bin/chmod 755 "$sup/bin/vdisp" "$sup/bin/setbright" "$sup/bin/mirror" 2>/dev/null
   /bin/cp -f "$TOOL_DIR/.lidwatch.sh" "$sup/lidwatch.sh" || return 1
   /bin/chmod 755 "$sup/lidwatch.sh" 2>/dev/null
   plist="$HOME/Library/LaunchAgents/com.yyz.lidawake.plist"
