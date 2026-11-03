@@ -93,7 +93,8 @@ ok "前置检查通过：合盖不休眠已开启（pmset=1 / 内核 SleepDisabl
 
 # ── 屏幕录制权限自检（决定要不要在合盖时截图）───────────────────────
 CAP_ENABLED=0
-probe="$LOG_DIR/.截图自检.png"
+# 注意：screencapture 无法写入以「.」开头的隐藏文件名，这里不能用 .xxx.png
+probe="$LOG_DIR/截图自检.png"
 rm -f "$probe"
 /usr/bin/perl -e 'alarm shift; exec @ARGV' 12 /usr/sbin/screencapture -x "$probe" >/dev/null 2>&1
 if [ -f "$probe" ]; then
