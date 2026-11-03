@@ -15,10 +15,13 @@ CAP_DIR="$LOG_DIR/合盖测试截图"
 SAMPLER_PID_FILE="$LOG_DIR/合盖测试.sampler.pid"
 RESULT_FILE="$LOG_DIR/合盖测试最近结果.txt"
 
-MIN_CLOSE_SECS=8      # 合盖至少持续这么久才算一次有效测试
-WAIT_CLOSE_MAX=900    # 最多等多久让你合盖（秒）
-WAIT_OPEN_MAX=600     # 合盖后最多等多久让你开盖（秒）
-MAX_GAP=30            # 采样间隔超过这个值就说明系统被挂起/休眠过（秒）
+MIN_CLOSE_SECS="${MIN_CLOSE_SECS:-8}"      # 合盖至少持续这么久才算一次有效测试
+WAIT_CLOSE_MAX="${WAIT_CLOSE_MAX:-900}"    # 最多等多久让你合盖（秒）
+WAIT_OPEN_MAX="${WAIT_OPEN_MAX:-600}"      # 合盖后最多等多久让你开盖（秒）
+MAX_GAP="${MAX_GAP:-30}"                   # 采样间隔超过这个值就说明系统被挂起/休眠过（秒）
+# 采样器最长运行多久（秒）：比"等合盖 + 等开盖"再宽裕一些，避免长时间等待时采样提前断掉
+SAMPLE_MAX_SECS="${SAMPLE_MAX_SECS:-$((WAIT_CLOSE_MAX + WAIT_OPEN_MAX + 600))}"
+LOCK_FILE="$LOG_DIR/合盖测试.lock"
 
 # ═════════════════════════════════════════════════════════════════════
 #  采样模式（由 --sample 启动的后台子进程使用，正常运行时不会走到这里）
@@ -29,7 +32,7 @@ if [ "${1:-}" = "--sample" ]; then
   : > "$SAMPLE_FILE"
   started=$SECONDS
   n=0
-  while [ $((SECONDS - started)) -lt 1800 ] && [ ! -f "$STOP_FILE" ]; do
+  while [ $((SECONDS - started)) -lt "${SAMPLE_MAX_SECS:-1800}" ] && [ ! -f "$STOP_FILE" ]; do
     ts_epoch="$(date +%s)"
     ts_human="$(date '+%Y-%m-%d %H:%M:%S')"
     closed="$(clamshell_closed)"
@@ -91,6 +94,20 @@ else
   info "如果刚才弹出了「终端想录制屏幕」的提示，允许后重新运行本脚本即可包含画面检测。"
 fi
 
+# ── 防止重复运行（两个人同时跑会互相覆盖采样文件）──────────────────
+if [ -f "$LOCK_FILE" ]; then
+  lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+  if [ -n "${lock_pid:-}" ] && kill -0 "$lock_pid" 2>/dev/null; then
+    bad "已经有一个合盖测试正在运行（pid ${lock_pid}）。"
+    info "如果这是你之前启动的测试，直接去合盖就行，不用重复启动。"
+    info "如果确认是上次异常退出留下的残留，删掉 ${LOCK_FILE} 后再试。"
+    pause_exit
+    exit 3
+  fi
+  rm -f "$LOCK_FILE"
+fi
+printf '%s' "$$" > "$LOCK_FILE"
+
 # ── 记录基线 ────────────────────────────────────────────────────────
 sleep_before="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state')"
 clamshell_before="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state due to .Clamshell Sleep.')"
@@ -101,7 +118,7 @@ rm -f "$STOP_FILE"
 
 # ── 启动后台采样器 ──────────────────────────────────────────────────
 SELF="$HERE/$(basename "$0")"
-CAP_ENABLED="$CAP_ENABLED" nohup "$SELF" --sample >"$LOG_DIR/合盖测试采样器.log" 2>&1 &
+CAP_ENABLED="$CAP_ENABLED" SAMPLE_MAX_SECS="$SAMPLE_MAX_SECS" nohup "$SELF" --sample >"$LOG_DIR/合盖测试采样器.log" 2>&1 &
 SAMPLER_PID=$!
 printf '%s' "$SAMPLER_PID" >"$SAMPLER_PID_FILE"
 disown "$SAMPLER_PID" 2>/dev/null || true
@@ -111,6 +128,7 @@ cleanup() {
   if [ -n "${SAMPLER_PID:-}" ]; then
     kill "$SAMPLER_PID" 2>/dev/null
   fi
+  rm -f "$LOCK_FILE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -124,7 +142,13 @@ printf '  3) 打开盖子，回到这个窗口 —— 结论会自动打印出�
 printf '\n'
 info "合盖期间屏幕熄灭是正常的；中途打开也没关系，脚本会自动记录真实合盖时长。"
 info "测试期间请不要关闭这个终端窗口。"
-printf '\n%s正在监听合盖状态…（最多等待 15 分钟，可随时按 Ctrl+C 中断）%s\n' "$CYAN" "$NC"
+if [ "$WAIT_CLOSE_MAX" -ge 120 ]; then
+  wait_desc="$((WAIT_CLOSE_MAX / 60)) 分钟"
+else
+  wait_desc="${WAIT_CLOSE_MAX} 秒"
+fi
+wait_till="$(/bin/date -r $(( $(date +%s) + WAIT_CLOSE_MAX )) '+%H:%M' 2>/dev/null || true)"
+printf '\n%s正在监听合盖状态…（最多等待 %s%s，可随时按 Ctrl+C 中断）%s\n' "$CYAN" "$wait_desc" "${wait_till:+，到 $wait_till 为止}" "$NC"
 
 # ── 等待合盖 → 开盖 ─────────────────────────────────────────────────
 deadline=$(( $(date +%s) + WAIT_CLOSE_MAX ))
@@ -156,6 +180,7 @@ done
 
 if [ "$valid" != "1" ]; then
   bad "没有检测到有效的合盖（超时或合盖时间过短），本次测试结束。"
+  info "本次等待了 ${wait_desc}，期间没有检测到持续 ${MIN_CLOSE_SECS} 秒以上的合盖。"
   info "请重新运行本脚本，并在听到「咔哒」后保持合盖 60 秒以上。"
   log "合盖测试：未检测到有效合盖"
   pause_exit
