@@ -5,6 +5,7 @@
 //      系统会保持「桌面模式」继续渲染，远程桌面就能看到真实画面。
 //
 // 用法：  vdisp [宽] [高] [hiDPI]        默认 1470 956 1（逻辑 1470×956、物理 2940×1912）
+//         vdisp --size                 打印主屏（内建屏）当前逻辑尺寸与物理像素后退出
 // 编译：  clang -fno-objc-arc -framework Foundation -framework CoreGraphics -o vdisp vdisp.m
 // 注意：  使用 macOS 私有 API（CGVirtualDisplay），系统升级后可能需要重新验证。
 //        进程必须运行在图形登录会话里（root 的 LaunchDaemon 无法创建显示器）。
@@ -21,6 +22,13 @@ static void MVd2(id o, const char *s, double a, double b) { ((void(*)(id,SEL,dou
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    if (argc > 1 && strcmp(argv[1], "--size") == 0) {
+      CGDirectDisplayID mainID = CGMainDisplayID();
+      CGRect b = CGDisplayBounds(mainID);
+      printf("%.0f %.0f %zu %zu\n", b.size.width, b.size.height,
+             CGDisplayPixelsWide(mainID), CGDisplayPixelsHigh(mainID));
+      return 0;
+    }
     int W  = argc > 1 ? atoi(argv[1]) : 1470;
     int H  = argc > 2 ? atoi(argv[2]) : 956;
     int hi = argc > 3 ? atoi(argv[3]) : 1;

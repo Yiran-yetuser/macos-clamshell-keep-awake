@@ -274,7 +274,11 @@ install_lidwatch() {
 </plist>
 PLIST
   /bin/launchctl bootout "gui/$uid/com.yyz.lidawake" >/dev/null 2>&1
-  /bin/launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null || return 1
+  /bin/sleep 1   # bootout 是异步的，立刻 bootstrap 会报 "Bootstrap failed: 5"
+  if ! /bin/launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null; then
+    /bin/sleep 1
+    /bin/launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null || return 1
+  fi
   printf 'ok'
 }
 

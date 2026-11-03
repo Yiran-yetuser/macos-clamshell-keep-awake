@@ -28,9 +28,10 @@ SAVED_BR="$SUPPORT_DIR/brightness.saved"
 VDISP_PIDFILE="$SUPPORT_DIR/vdisp.pid"
 STATE_FILE="$SUPPORT_DIR/lid.state"
 
-VD_W=1470          # 虚拟屏逻辑宽度（与内建屏缩放一致）
+VD_W=1470          # 虚拟屏逻辑宽度（默认值；运行时会尽量跟内建屏当前缩放一致）
 VD_H=956           # 虚拟屏逻辑高度
 VD_HIDPI=1         # 1 = Retina 2x 背衬，远程画面清晰
+LAST_BR="$SUPPORT_DIR/brightness.last"   # 最近一次读到的亮度（读失败时兜底用）
 
 mkdir -p "$BIN_DIR" "$LOG_DIR" 2>/dev/null
 
@@ -47,7 +48,36 @@ clamshell() {
     | /usr/bin/awk -F'= ' '/"AppleClamshellState"/{print $2; exit}'
 }
 
-brightness() { "$BIN_DIR/setbright" 2>/dev/null; }
+# 读取内建屏当前逻辑尺寸，让虚拟屏跟它一致（用户改过缩放也能跟上）
+read_main_size() {
+  local w h rest
+  rest="$("$BIN_DIR/vdisp" --size 2>/dev/null)" || return 1
+  w="$(printf '%s' "$rest" | /usr/bin/awk '{print $1}')"
+  h="$(printf '%s' "$rest" | /usr/bin/awk '{print $2}')"
+  case "$w$h" in
+    *[!0-9]*|"") return 1 ;;
+  esac
+  [ "$w" -ge 800 ] || return 1
+  [ "$h" -ge 600 ] || return 1
+  # 太大的缩放模式按比例收缩到宽度 1920，避免虚拟屏像素过多拖慢编码
+  if [ "$w" -gt 1920 ]; then
+    h=$(( h * 1920 / w ))
+    w=1920
+  fi
+  VD_W="$w"
+  VD_H="$h"
+}
+
+brightness() {
+  # 读亮度偶尔会瞬时失败（刚唤醒/显示状态切换），重试几次再放弃
+  local i v
+  for i in 1 2 3; do
+    v="$("$BIN_DIR/setbright" 2>/dev/null)"
+    [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    /bin/sleep 0.2
+  done
+  return 1
+}
 
 # 亮度是否接近 0（返回 0=true）
 is_dark() {
@@ -89,13 +119,22 @@ stop_vdisp() {
 }
 
 dim_screen() {
-  local cur saved
+  local cur
   cur="$(brightness)"
-  [ -n "$cur" ] || return 0
-  if [ ! -f "$SAVED_BR" ]; then
-    /bin/echo "$cur" >"$SAVED_BR" 2>/dev/null
-    saved="$cur"
+  if [ -z "$cur" ]; then
+    # 读不到原亮度也要把背光关掉（否则合盖后屏幕会一直亮）；开盖时按最近记录/默认值恢复
+    if [ ! -f "$SAVED_BR" ]; then
+      if [ -s "$LAST_BR" ]; then
+        /bin/cp -f "$LAST_BR" "$SAVED_BR" 2>/dev/null
+      else
+        /bin/echo "0.42" >"$SAVED_BR" 2>/dev/null
+      fi
+    fi
+    "$BIN_DIR/setbright" 0 >/dev/null 2>&1
+    log "合盖：读取原亮度失败，背光仍已归零（开盖按备用值恢复）"
+    return 0
   fi
+  [ -f "$SAVED_BR" ] || /bin/echo "$cur" >"$SAVED_BR" 2>/dev/null
   "$BIN_DIR/setbright" 0 >/dev/null 2>&1
   log "合盖：内建屏背光 0（原亮度 $cur，已记录以便开盖恢复）"
 }
@@ -119,23 +158,26 @@ cleanup() {
 }
 trap 'cleanup; exit 0' INT TERM HUP
 
-log "合盖画面守护启动（盖子=$(clamshell)，当前亮度=$(brightness)，虚拟屏 ${VD_W}×${VD_H}@${VD_HIDPI}x）"
+log "合盖画面守护启动（盖子=$(clamshell)，当前亮度=$(brightness)，虚拟屏 ${VD_W}×${VD_H} 逻辑 / $((VD_W*2))×$((VD_H*2)) 物理）"
 
 while :; do
   rotate_log
   st="$(clamshell)"
   if [ "$st" = "Yes" ]; then
     # 合盖：确保虚拟屏在、背光为 0
-    if ! vdisp_alive; then start_vdisp; fi
+    if ! vdisp_alive; then
+      read_main_size || true
+      start_vdisp
+    fi
     cur="$(brightness)"
-    if [ -n "$cur" ] && ! is_dark "$cur"; then
-      if [ -f "$SAVED_BR" ]; then
-        # 背光被别的程序调高了，静默归零
+    if [ -f "$SAVED_BR" ]; then
+      # 已经处理过一次：只有背光被别的程序调高时才静默归零
+      if [ -n "$cur" ] && ! is_dark "$cur"; then
         "$BIN_DIR/setbright" 0 >/dev/null 2>&1
         log "合盖：背光被调高到 $cur，已重新调回 0"
-      else
-        dim_screen
       fi
+    else
+      dim_screen
     fi
     /bin/echo "closed" >"$STATE_FILE" 2>/dev/null
     /bin/sleep 1
@@ -143,6 +185,7 @@ while :; do
     # 开盖：撤掉虚拟屏、恢复背光
     if vdisp_alive; then stop_vdisp; fi
     if [ -f "$SAVED_BR" ]; then restore_screen; fi
+    cur="$(brightness)" && [ -n "$cur" ] && /bin/echo "$cur" >"$LAST_BR" 2>/dev/null
     /bin/echo "open" >"$STATE_FILE" 2>/dev/null
     /bin/sleep 1
   fi
