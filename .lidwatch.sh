@@ -196,7 +196,23 @@ cleanup() {
 }
 trap 'cleanup; exit 0' INT TERM HUP
 
+cleanup_stale() {
+  local p
+  if [ -f "$HD_ACTIVE" ]; then
+    "$BIN_DIR/mirror" off >/dev/null 2>&1
+    /bin/rm -f "$HD_ACTIVE"
+    log "启动：清理了上次残留的镜像关系"
+  fi
+  p="$(/bin/cat "$VDISP_PIDFILE" 2>/dev/null)"
+  if [ -n "$p" ] && /bin/kill -0 "$p" 2>/dev/null; then
+    /bin/kill -9 "$p" 2>/dev/null
+    log "启动：清理了上次残留的虚拟屏（pid=$p）"
+  fi
+  /bin/rm -f "$VDISP_PIDFILE" "$VDISP_IDFILE"
+}
+
 load_hd_conf
+cleanup_stale
 if [ "$HD_ENABLED" = "1" ]; then
   log "合盖画面守护启动（盖子=$(clamshell)，当前亮度=$(brightness)，高清投屏 ${HD_W}×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理）"
 else
