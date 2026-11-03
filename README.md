@@ -2,9 +2,14 @@
 
 一句话：**合上盖子后，系统不休眠、Wi‑Fi 不断、Tailscale 不离线、RustDesk / ToDesk 远程桌面随时能连进来，而且远程看到的是真实画面（不是黑屏）。**
 
-实现上分两层：
-1. **系统级**：`pmset disablesleep 1` 关掉「合盖休眠」，再加一个守护进程防止开关被第三方软件改回去；
-2. **画面级**：合盖时把内建屏**背光调到 0** —— 屏幕物理上不亮（省电、不刺眼），但系统继续渲染，远程桌面抓到的是内建屏的真实画面；只有在系统真的停止渲染（截图纯黑）时，才补一块 2 倍像素的虚拟显示器兜底。开盖后自动恢复。
+> 🇬🇧 **English TL;DR** — Keep a MacBook fully usable with the lid closed: no sleep, Wi‑Fi/Tailscale stay online, remote desktop (RustDesk / ToDesk / UU) keeps working, and the remote view is a real 4K-sharp picture instead of a black screen. Two layers: `sudo pmset -a disablesleep 1` (+ a root watchdog that re-applies it), and a ScreenCaptureKit-friendly HiDPI virtual display that mirrors the built-in panel only while someone is actually watching remotely. A small SwiftUI app (`合盖不休眠.app`) wraps both layers.
+>
+> Tested on MacBook Air M4 / macOS 15.7.9. Requires macOS 13+; the private APIs used (`CGVirtualDisplay`, `DisplayServices`) are undocumented and may change between releases.
+
+实现上分三层：
+1. **系统级**：`pmset disablesleep 1` 关掉「合盖休眠」，再加一个 root 守护进程（`com.yyz.keepawake`）防止开关被第三方软件改回去（实测 ToDesk 的 XPCHelper 每 10 分钟左右会把它改回 0，守护 2 秒内修回）；
+2. **画面级**：检测到正在被远程观看时，自动创建一块 2 倍像素（Retina）的虚拟显示器，并把**内建屏镜像过去** —— 远端拿到 4K 级清晰画面；远程断开约 10 秒后自动解除、本机屏幕恢复。没人观看时，合盖只用「背光归零」让屏幕物理不亮但系统继续渲染；
+3. **一步到位**：`合盖不休眠.app`（SwiftUI 小应用）把上面两层做成开关 + 状态面板 + 投屏尺寸预设。
 
 适用机型：本机 MacBook Air（Apple M4 / macOS 15.7.9），原理对 Intel Mac 同样适用。
 
@@ -25,6 +30,8 @@
 
 
 ## 🖥️ macOS 应用（推荐用法）
+
+![主面板](docs/主面板.png)
 
 不想记脚本？直接双击 **`合盖不休眠.app`**（本目录里），一个窗口看全部状态，按钮一键开关：
 
@@ -57,11 +64,12 @@ open "合盖不休眠.app"
 | --- | --- | --- |
 | `1-开启防合盖休眠.command` | 开启「合盖不休眠」并安装「合盖画面守护」，重启、关机后依然有效 | 第一次需要（系统级电源设置），之后不需要 |
 | `2-关闭防合盖休眠.command` | 恢复 macOS 默认：合盖即休眠，并卸载画面守护（准备装包、出差别忘了它） | 需要（撤系统级设置时） |
+| `5-投屏尺寸.command` | 切换远程画面的清晰度方案：`1920×1080@2x`（4K 16:9，推荐）/ `1920×1200@2x`（4K 16:10）/ `2560×1600@2x`（5120×3200）/ 仅合盖生效 / 关闭 | 不需要 |
 | `3-查看状态.command` | 只读体检：设置、守护进程、画面守护、网络/Tailscale/远程桌面、最近的睡眠记录 | 不需要 |
 | `4-合盖测试.command` | 自动做一次真实合盖测试并出 PASS/FAIL 报告（含「画面是否为黑屏」检测） | 不需要 |
 | `.lib.sh` | 上面几个脚本共用的函数库（Finder 里默认隐藏，不用管它） | — |
 | `.lidwatch.sh` | 「合盖画面守护」本体（由 1 号脚本安装到 `~/Library/Application Support/yz-keepawake/`，不用手动运行） | — |
-| `bin/` | 两个小工具的源码与编译结果：`vdisp`（创建 HiDPI 虚拟显示器）、`setbright`（读取/设置内建屏亮度） | — |
+| `bin/` | 四个小工具的源码与编译结果：`vdisp`（创建 HiDPI 虚拟显示器）、`setbright`（读取/设置内建屏亮度）、`mirror`（把内建屏镜像到虚拟屏 / 解除）、`capprobe`（查询显示器是否被捕获） | — |
 | `.admin-enable.sh` / `.admin-disable.sh` | 1 号 / 2 号脚本在管理员授权后执行的系统级操作（不用手动运行） | — |
 | `logs/` | 运行日志、测试采样明细、测试报告 | — |
 
@@ -120,7 +128,7 @@ sudo pmset -a disablesleep 0     # 恢复「合盖休眠」
 ```
 
 打开后，系统不再因为「合盖」进入睡眠。网络接口、Tailscale 后台进程、RustDesk / ToDesk 服务都还在运行，
-所以从外网通过 Tailscale IP（本机 `100.91.137.116`）就能连回远程桌面。
+所以从外网通过 Tailscale IP（本机 `100.x.y.z`（示例））就能连回远程桌面。
 
 这个设置写在 `/Library/Preferences/com.apple.PowerManagement.plist` 里，**重启、关机后仍然有效**。
 
@@ -139,11 +147,21 @@ sudo pmset -a disablesleep 0     # 恢复「合盖休眠」
 
 | 问题 | 原因 | 解法 |
 | --- | --- | --- |
-| 合盖后内建屏**一直亮着** | macOS 的「合盖关屏」是跟着「合盖休眠」一起发生的；不让它睡，它就不关屏 | 合盖时把内建屏**背光调到 0**（`DisplayServicesSetBrightness`），屏幕物理不亮，但渲染继续 |
-| 合盖后远程桌面**全黑** | 内建屏是唯一显示器，合盖后 WindowServer 不再为它合成画面 | 合盖时每 15 秒做一次**渲染自检**（截图看体积），只有连续两次判定为纯黑（<300 KB）才创建 HiDPI 虚拟显示器兜底（`CGVirtualDisplay`，逻辑 1470×956 / 物理 2940×1912）；能正常渲染就不建，避免干扰会抢占虚拟屏的远程软件 |
+| 合盖后内建屏**一直亮着** | macOS 的「合盖关屏」是跟着「合盖休眠」一起发生的；不让它睡，它就不关屏 | 合盖时把内建屏**背光调到 0**（`DisplayServicesSetBrightness`）；没人远程观看时这样就够了 |
+| 合盖后远程桌面**全黑** | 内建屏是唯一显示器，合盖后 WindowServer 不再为它合成画面 | 在**检测到远程有人观看**时创建 2 倍像素虚拟显示器，并把内建屏镜像过去（`CGVirtualDisplay` + `CGConfigureDisplayMirrorOfDisplay`）；虚拟屏成为母屏、桌面按 3840×2160 / 5120×3200 渲染，远端拿到真实画面 |
 
-这两件事由用户级守护进程 `com.yyz.lidawake`（`.lidwatch.sh`）完成：每 1 秒检查盖子状态，合盖即关背光并每 15 秒自检渲染，开盖恢复亮度并销毁兜底虚拟屏。
-虚拟屏**默认不创建、只在渲染真的停止时兜底**：常驻两块屏会让 RustDesk 在显示器间反复切换导致模糊/卡死；而网易 UU 远程会直接抓走这块多出来的空屏，用户看到「virtualdisplay 没内容、内容在 built-in」。另外**不要用镜像模式**：实测合盖后内建屏会从显示器列表消失、分辨率塌缩到 800×520，远程更糊。
+**镜像方向不能反**：把「虚拟屏镜像到内建屏」实测会让合盖后内建屏从显示器列表消失、分辨率塌缩到 800×520（远程更糊）；必须让**内建屏镜像到虚拟屏**。
+
+**为什么只在有人看的时候才开**：常驻两块屏会让 RustDesk 在显示器间反复切换导致模糊/卡死，网易 UU 远程还会直接抓走那块多出来的空屏（用户看到「virtualdisplay 没内容、内容在 built-in」）。所以守护用两个信号判断「真的有人在看」：UU 被控端的出站流量（2 秒内 ≥120 KB）或系统捕获状态；同时用键盘鼠标空闲时间判断本机是否有人，本机有人就优先还屏。断开约 10 秒后自动解除镜像、销毁虚拟屏、恢复亮度。
+
+这层由用户级守护 `com.yyz.lidawake`（`.lidwatch.sh`）完成，常见日志：
+
+```
+开盖：远程正在观看，启用高清投屏
+内建屏(id=1) 镜像 → 指定主屏  (begin=0 mirror=0 complete=0)
+高清投屏已生效（1920×1080 逻辑 / 3840×2160 物理，始终启用=1）
+合盖：远程没有观看，关闭虚拟屏（本机屏幕正常）
+```
 
 ---
 
@@ -182,7 +200,7 @@ sudo pmset -a disablesleep 0     # 恢复「合盖休眠」
 
 1. 运行 `1-开启防合盖休眠.command`，确认显示 ✅（画面守护也显示运行中）；
 2. 合上盖子，等 10 秒 —— 此时本机屏幕应该是黑的（背光已关，这是正常的）；
-3. 在另一台电脑上：`tailscale ping 100.91.137.116`（或手机 Tailscale App 里 ping 这台 Mac）；
+3. 在另一台电脑上：`tailscale ping <这台 Mac 的 Tailscale IP>`（或手机 Tailscale App 里 ping 这台 Mac）；
 4. 用 RustDesk / ToDesk 连接这台 Mac：能看到画面、能移动鼠标、能打开程序；
 5. 打开盖子：屏幕亮度立刻恢复，画面正常，虚拟屏自动移除（需要密码解锁是正常的）。
 
@@ -251,9 +269,9 @@ logs/合盖测试截图/           合盖期间抓的截图（用于判断画面
 ## 本机环境（测试时记录）
 
 - MacBook Air · Apple M4 · macOS 15.7.9 (24G830) · 未受 MDM 管理
-- Tailscale 1.104.1（macsys 版），本机 Tailscale IP：`100.91.137.116`
+- Tailscale 1.104.1（macsys 版），本机 Tailscale IP：`100.x.y.z`（示例，已脱敏）
 - 远程桌面：RustDesk（后台服务运行中）、ToDesk（运行中）
-- 网络：Wi‑Fi（en0）→ 网关 `10.208.128.1`
+- 网络：Wi‑Fi（en0）→ 网关 `10.x.y.1`（示例）
 
 ---
 
@@ -267,3 +285,10 @@ logs/合盖测试截图/           合盖期间抓的截图（用于判断画面
 - 2026-11-03 增强稳定性：虚拟屏尺寸改为跟随内建屏当前缩放（`vdisp --size`，用户改过分辨率也能自适应）；读取亮度失败时用最近记录值兜底，保证合盖一定关背光、开盖能恢复；修复安装守护时重复启动的竞态（`bootout` 是异步的）
 - 2026-11-03 **画面策略改为「先关背光、按需兜底」**：网易 UU 远程会把合盖时新建的空虚拟屏当成要显示的那块，用户看到「virtualdisplay 空白、内容留在 built-in」；改为默认不建虚拟屏（关背光即可），每 15 秒做渲染自检，只有真的停止渲染才补建。镜像模式实测有害（合盖后内建屏消失、分辨率掉到 800×520），已弃用
 - 2026-11-03 自动化验收 PASS：`4-合盖测试.command` 合盖 45 秒、0 休眠、截图 3175/3505 KB（非黑）
+- 2026-11-03：新增 `5-投屏尺寸.command`、`bin/mirror`、`bin/capprobe`；画面守护改为「跟随远程会话自动开关」；打包 `合盖不休眠.app`；README 补英文摘要与高清投屏原理。
+
+---
+
+## 许可
+
+MIT License — 见 [LICENSE](LICENSE)。

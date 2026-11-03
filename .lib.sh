@@ -110,7 +110,7 @@ tailscale_self_online() {
     in_self && /"Online":/ { gsub(/[",]/, ""); print $2; exit }'
 }
 
-# Tailscale 本机 IP（IPv4），如 100.91.137.116
+# Tailscale 本机 IP（IPv4），如 100.x.y.z
 tailscale_ip() {
   tailscale ip -4 2>/dev/null | head -1
 }

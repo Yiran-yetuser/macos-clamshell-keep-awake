@@ -357,7 +357,7 @@ if [ "$verdict" = "PASS" ]; then
   if [ "$CAP_ENABLED" = "1" ] && [ "$capn" -gt 0 ] && [ "$capmax" -le 200000 ]; then
     warn "不过合盖期间画面偏黑（截图都小于 100 KB），远程桌面可能会看到黑屏 —— 请按 README 的排查步骤处理。"
   fi
-  printf '\n%s最后一步：%s合上盖子后，从你的另一台电脑（yyzwindows11）用 RustDesk 连这台 Mac，确认能看到画面并能操作。\n' "$CYAN" "$NC"
+  printf '\n%s最后一步：%s合上盖子后，从你的另一台电脑用 RustDesk 连这台 Mac，确认能看到画面并能操作。\n' "$CYAN" "$NC"
 else
   printf '%s❌ 测试未通过：合盖后系统仍然休眠了。%s\n' "$RED" "$NC"
   printf '%b' "$reasons"
