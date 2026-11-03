@@ -62,6 +62,20 @@ fi
 # ═════════════════════════════════════════════════════════════════════
 #  正式测试
 # ═════════════════════════════════════════════════════════════════════
+case "${1:-}" in
+  "") ;;
+  -h|--help)
+    printf '用法：双击运行，或在终端里执行本脚本，然后按提示合盖即可。\n'
+    printf '本脚本不需要任何参数；请不要从命令行带参数运行，否则会被当成一次完整测试。\n'
+    exit 0
+    ;;
+  *)
+    printf '未知参数：%s\n' "$1" >&2
+    printf '本脚本不需要参数，直接双击运行即可。\n' >&2
+    exit 1
+    ;;
+esac
+
 title "④ 合盖测试 · 验证合盖后系统是否保持运行"
 hr
 
@@ -108,11 +122,7 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 printf '%s' "$$" > "$LOCK_FILE"
 
-# ── 记录基线 ────────────────────────────────────────────────────────
-sleep_before="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state')"
-clamshell_before="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state due to .Clamshell Sleep.')"
-wake_before="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Wake from')"
-
+# ── 准备采样文件 ────────────────────────────────────────────────────
 rm -f "$STOP_FILE"
 : > "$SAMPLE_FILE"
 
@@ -194,12 +204,21 @@ kill "$SAMPLER_PID" 2>/dev/null
 SAMPLER_PID=""
 
 close_dur=$((opened_at - closed_at))
-sleep_after="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state')"
-clamshell_after="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Entering Sleep state due to .Clamshell Sleep.')"
-wake_after="$(/usr/bin/pmset -g log 2>/dev/null | grep -c 'Wake from')"
-sleep_new=$((sleep_after - sleep_before))
-clamshell_new=$((clamshell_after - clamshell_before))
-wake_new=$((wake_after - wake_before))
+
+# 只统计「本次合盖的时间窗口内」的睡眠记录。
+# 不能用「测试前后总数相减」：pmset 日志会滚动，旧记录被挤掉会让差值变成负数。
+w_start="$(/bin/date -r $((closed_at - 3)) '+%Y-%m-%d %H:%M:%S')"
+w_end="$(/bin/date -r $((opened_at + 3)) '+%Y-%m-%d %H:%M:%S')"
+pmlog="$(/usr/bin/pmset -g log 2>/dev/null)"
+sleep_new="$(printf '%s\n' "$pmlog" | awk -v s="$w_start" -v e="$w_end" '
+  $1 ~ /^[0-9][0-9][0-9][0-9]-/ { d = $1 " " $2; if (d >= s && d <= e && index($0, "Entering Sleep state")) n++ }
+  END { print n + 0 }')"
+clamshell_new="$(printf '%s\n' "$pmlog" | awk -v s="$w_start" -v e="$w_end" '
+  $1 ~ /^[0-9][0-9][0-9][0-9]-/ { d = $1 " " $2; if (d >= s && d <= e && index($0, "Entering Sleep state") && index($0, "Clamshell Sleep")) n++ }
+  END { print n + 0 }')"
+wake_new="$(printf '%s\n' "$pmlog" | awk -v s="$w_start" -v e="$w_end" '
+  $1 ~ /^[0-9][0-9][0-9][0-9]-/ { d = $1 " " $2; if (d >= s && d <= e && index($0, "Wake from")) n++ }
+  END { print n + 0 }')"
 
 W1=$((closed_at - 5))
 W2=$((opened_at + 5))
@@ -233,7 +252,7 @@ verdict="PASS"
 reasons=""
 if [ "$sleep_new" -gt 0 ]; then
   verdict="FAIL"
-  reasons="${reasons}   · 系统日志里出现了 ${sleep_new} 条新的休眠记录（说明合盖后还是睡了）\n"
+  reasons="${reasons}   · 合盖窗口内出现了 ${sleep_new} 条休眠记录（说明合盖后还是睡了）\n"
 fi
 if [ "$clamshell_new" -gt 0 ]; then
   verdict="FAIL"
@@ -283,9 +302,10 @@ REPORT_FILE="$LOG_DIR/合盖测试报告-$(date '+%Y%m%d-%H%M%S').log"
   echo "  合盖时长：${close_dur} 秒"
   echo ""
   echo "二、休眠检测"
-  echo "  新增「Entering Sleep state」：${sleep_new} 条"
-  echo "  新增「Clamshell Sleep」：${clamshell_new} 条"
-  echo "  新增「Wake from」：${wake_new} 条"
+  echo "  检测窗口：${w_start} ～ ${w_end}"
+  echo "  窗口内「Entering Sleep state」：${sleep_new} 条"
+  echo "  窗口内「Clamshell Sleep」：${clamshell_new} 条"
+  echo "  窗口内「Wake from」：${wake_new} 条"
   echo "  合盖期间采样点：${n} 个，最大采样间隔：${maxgap} 秒（超过 ${MAX_GAP} 秒说明系统被挂起/休眠过）"
   echo ""
   echo "三、网络"
