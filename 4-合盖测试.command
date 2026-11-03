@@ -91,7 +91,7 @@ if [ "$sd" != "1" ] || [ "$sd_kern" != "Yes" ]; then
 fi
 ok "前置检查通过：合盖不休眠已开启（pmset=1 / 内核 SleepDisabled=Yes）"
 
-# 「画面守护」是否在跑：它负责合盖后创建虚拟屏 + 关背光，远程桌面才有画面
+# 「画面守护」是否在跑：它负责合盖后关背光（必要时兜底创建虚拟屏），远程桌面才有画面
 lw_now="$(lidwatch_status)"
 if [ "$lw_now" = "running" ]; then
   ok "画面守护运行中（合盖后远程桌面能看到真实画面）"
@@ -295,7 +295,7 @@ elif [ "$capn" -eq 0 ]; then
 elif [ "$capmax" -gt 200000 ]; then
   cap_line="合盖期间截图 ${capn} 张，大小 $((capmin / 1024)) KB ~ $((capmax / 1024)) KB —— 画面正常，远程桌面能看到桌面"
   if [ "$lw_now" = "running" ]; then
-    cap_line="${cap_line}（画面守护已生效：虚拟屏 + 背光归零）"
+    cap_line="${cap_line}（画面守护已生效：背光归零，系统仍在渲染）"
   fi
 else
   cap_line="合盖期间截图 ${capn} 张，都很小（最大 $((capmax / 1024)) KB）—— 画面可能是黑的，远程桌面可能只看到黑屏"
@@ -309,7 +309,7 @@ REPORT_FILE="$LOG_DIR/合盖测试报告-$(date '+%Y%m%d-%H%M%S').log"
   echo "生成时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "机器：$(sysctl -n hw.model 2>/dev/null) · $(sysctl -n machdep.cpu.brand_string 2>/dev/null) · macOS $(sw_vers -productVersion 2>/dev/null)"
   echo "设置：pmset SleepDisabled=$(sleep_disabled) · 内核 SleepDisabled=$(sleep_disabled_kernel)"
-  echo "画面守护：${lw_now:-未知}（合盖时创建 HiDPI 虚拟屏并把内建屏背光归零）"
+  echo "画面守护：${lw_now:-未知}（合盖时关背光；仅当系统停止渲染时才兜底创建 HiDPI 虚拟屏）"
   echo ""
   echo "一、合盖过程"
   echo "  合盖时间：$(date -r "$closed_at" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"

@@ -8,8 +8,8 @@
 #    · 系统级（要管理员密码）：pmset disablesleep 1 + 守护进程
 #      com.yyz.keepawake —— 防止开关被第三方软件改回 0（ToDesk 会这么干）
 #    · 用户级（不要密码）：合盖画面守护 com.yyz.lidawake
-#      合盖时创建 HiDPI 虚拟屏并把内建屏背光归零，让远程桌面拿到真实画面；
-#      开盖时移除虚拟屏、恢复亮度
+#      合盖时把内建屏背光归零（屏幕物理上不亮，系统继续渲染），
+#      只有当系统真的停止渲染时才补建 HiDPI 虚拟屏兜底；开盖恢复亮度
 # ─────────────────────────────────────────────────────────────────────
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -89,14 +89,14 @@ if [ "$after" = "1" ] && [ "$kern_after" = "Yes" ] && [ "$lw" = "running" ]; the
   else
     warn "休眠守护没起来（daemon=$dm），开关可能被第三方软件改回 0"
   fi
-  info "画面守护 com.yyz.lidawake：运行中（合盖→虚拟屏+背光归零，开盖→自动恢复）"
+  info "画面守护 com.yyz.lidawake：运行中（合盖→背光归零、按需兜底虚拟屏；开盖→自动恢复）"
   hr
   printf '%s效果：%s\n' "$BOLD" "$NC"
   printf '  · 合上盖子后系统不再休眠，Wi-Fi / 有线网络保持连接\n'
   printf '  · Tailscale 保持在线，可以从别的设备随时连回这台 Mac\n'
   printf '  · 合盖后内建屏会「黑掉」（背光归零）但系统仍在渲染\n'
   printf '    → RustDesk / ToDesk 等远程桌面连进来可以看到真实画面（不是黑屏）\n'
-  printf '  · 打开盖子后：屏幕亮度自动恢复，虚拟屏自动移除\n'
+  printf '  · 打开盖子后：屏幕亮度自动恢复，兜底虚拟屏自动移除\n'
   printf '\n%s注意：%s\n' "$YELLOW" "$NC"
   printf '  · 合盖状态下电池会持续耗电（约 5%%~10%%/小时，取决于负载）\n'
   printf '  · 机器会持续发热，放进包里或抽屉前请先运行「② 关闭防合盖休眠」\n'

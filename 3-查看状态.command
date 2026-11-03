@@ -75,28 +75,28 @@ if [ -n "$drift" ]; then
   printf '%s\n' "$drift" | while IFS= read -r line; do printf '    %s\n' "$line"; done
 fi
 
-# ── 5. 合盖画面守护（虚拟屏 + 背光，保证远程能看到画面）──────────────
+# ── 5. 合盖画面守护（背光归零；必要时兜底虚拟屏，保证远程能看到画面）──
 lw="$(lidwatch_status)"
 if [ "$lw" = "running" ]; then
-  printf '画面守护：%s✅ 运行中%s（合盖→建虚拟屏+背光归零；开盖→自动恢复）\n' "$GREEN" "$NC"
+  printf '画面守护：%s✅ 运行中%s（合盖→背光归零、按需兜底虚拟屏；开盖→自动恢复）\n' "$GREEN" "$NC"
 else
-  printf '画面守护：%s✗ 未运行%s → 合盖后远程桌面可能只看到黑屏，建议重跑「1-开启」\n' "$YELLOW" "$NC"
+  printf '画面守护：%s✗ 未运行%s → 合盖后屏幕会一直亮，远程也可能只看到黑屏，建议重跑「1-开启」\n' "$YELLOW" "$NC"
 fi
 vd="$(vdisp_running)"
 br="$(display_brightness)"
-vd_txt="未创建"
-[ "$vd" = "running" ] && vd_txt="已创建（HiDPI 2x）"
+vd_txt="未创建（正常：系统仍在渲染）"
+[ "$vd" = "running" ] && vd_txt="已创建（HiDPI 2x 兜底）"
 br_txt="${br:-未知}"
 printf '  虚拟屏：%s · 屏幕亮度：%s\n' "$vd_txt" "$br_txt"
 if [ "$(clamshell_closed)" = "Yes" ]; then
-  if [ "$vd" = "running" ] && [ -n "$br" ]; then
-    if /usr/bin/awk -v c="$br" 'BEGIN{exit !(c + 0 <= 0.001)}'; then
-      printf '  %s合盖中：虚拟屏已就位、背光已归零 —— 远程桌面此时能看到真实画面（屏幕不亮）%s\n' "$DIM" "$NC"
+  if [ -n "$br" ] && /usr/bin/awk -v c="$br" 'BEGIN{exit !(c + 0 <= 0.001)}'; then
+    if [ "$vd" = "running" ]; then
+      printf '  %s合盖中：已补建虚拟屏兜底、背光已归零 —— 远程桌面能看到真实画面（屏幕不亮）%s\n' "$DIM" "$NC"
     else
-      printf '  %s合盖中：背光还没归零（%s），画面守护可能刚启动或未生效%s\n' "$YELLOW" "$br" "$NC"
+      printf '  %s合盖中：背光已归零、系统仍在渲染（无需虚拟屏）—— 远程桌面能看到真实画面（屏幕不亮）%s\n' "$DIM" "$NC"
     fi
   else
-    printf '  %s合盖中但虚拟屏没起来 —— 远程桌面可能黑屏%s\n' "$YELLOW" "$NC"
+    printf '  %s合盖中：背光还没归零（%s），画面守护可能刚启动或未生效%s\n' "$YELLOW" "${br:-读不到}" "$NC"
   fi
 fi
 lwlog="$(lidwatch_log 2)"
@@ -230,7 +230,7 @@ if [ "$sd" = "1" ] && [ "$sd_kern" = "Yes" ]; then
     Battery*) printf '%s提示：当前是电池供电，合盖状态下会持续掉电，注意剩余电量。%s\n' "$YELLOW" "$NC" ;;
   esac
   if [ "$lw" = "running" ]; then
-    printf '%s合盖后远程画面：由「画面守护」保证（虚拟屏 + 背光归零），已在实机上验证过。%s\n' "$DIM" "$NC"
+    printf '%s合盖后远程画面：由「画面守护」保证（背光归零；必要时兜底虚拟屏），已在实机上验证过。%s\n' "$DIM" "$NC"
   else
     printf '%s警告：画面守护没运行，合盖后远程桌面可能只有黑屏。%s\n' "$YELLOW" "$NC"
   fi
