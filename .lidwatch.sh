@@ -2,25 +2,25 @@
 # ─────────────────────────────────────────────────────────────────────
 #  合盖画面守护（用户级常驻）
 #
-#  合盖时做两件事，目标是「屏幕物理上不亮，但远程桌面拿到又大又清晰的画面」：
+#  目标：远程桌面（UU / RustDesk / ToDesk）无论本机盖子开还是合，都拿到
+#        **16:10** 的高清画面；合盖时本机屏幕不亮。
 #
-#    ① 高清投屏（默认开启，可调尺寸）
-#       建一块 HiDPI 虚拟屏（默认逻辑 2560×1600 / 物理 5120×3200），再把内建屏
-#       「镜像到」这块虚拟屏上 —— 虚拟屏成为母屏，整个桌面按 5120×3200 渲染，
-#       内建屏作为从屏由系统关掉（active=0，物理上不亮）。
-#       这样远程拿到的就是精确 16:10 的高清画面，不会因为内建屏 3:2 的宽高比
-#       被塞进 16:10/16:9 的客户端窗口而缩放发软。
-#       尺寸可在 ~/Library/Application Support/yz-keepawake/hd.conf 里改，
-#       或运行「5-投屏尺寸.command」选择：2560×1600 / 1920×1200（4K+界面放大）/
-#       1920×1080（4K+16:9）/ 关闭。
+#  做法（高清投屏）：
+#    ① 建一块 16:10 的 HiDPI 虚拟屏（默认逻辑 1920×1200 / 物理 3840×2400）
+#    ② 把内建屏「镜像到」这块虚拟屏上 —— 虚拟屏成为母屏，整个桌面按 3840×2400
+#       渲染，内建屏作为从屏由系统处理
+#    ③ 远程端因此永远只看到一块 16:10 的 4K 画面，客户端不需要再做缩放
 #
-#    ② 兜底（高清投屏关闭或失败时）
-#       只把内建屏背光调到 0；每 15 秒截图自检，只有系统真的停止渲染才补虚拟屏。
+#  开关（hd.conf 第 4 个词）：
+#    · 默认 always = 开盖也保持 16:10（远程端比例始终一致）
+#    · lidonly    = 只在合盖时启用，开盖恢复内建屏 3:2
+#    · off        = 彻底不用高清投屏，合盖只关背光
+#    改完运行「5-投屏尺寸.command」即时生效。
 #
-#  打开盖子：解除镜像 → 移除虚拟屏 → 恢复背光，一切复原。
+#  兜底：高清投屏没生效时，合盖只把内建屏背光调 0；每 15 秒截图自检，
+#        只有系统真的停止渲染才补建虚拟屏。
 #
 #  安装位置：~/Library/Application Support/yz-keepawake/lidwatch.sh
-#  由 LaunchAgent com.yyz.lidawake 以当前登录用户身份常驻（必须在图形会话中）。
 #  日志：同目录 logs/合盖画面守护.log
 # ─────────────────────────────────────────────────────────────────────
 
@@ -35,16 +35,18 @@ HD_ACTIVE="$SUPPORT_DIR/hd.active"
 HD_CONF="$SUPPORT_DIR/hd.conf"
 STATE_FILE="$SUPPORT_DIR/lid.state"
 LAST_BR="$SUPPORT_DIR/brightness.last"
-RENDER_PROBE="$LOG_DIR/渲染自检.png"   # 注意：screencapture 不能写以 . 开头的文件名
+RENDER_PROBE="$LOG_DIR/渲染自检.png"   # screencapture 不能写以 . 开头的文件名
 
-# ── 高清投屏尺寸（可被 hd.conf 覆盖）────────────────────────────────
+# ── 高清投屏默认值（可被 hd.conf 覆盖）──────────────────────────────
 HD_ENABLED=1
-HD_W=2560
-HD_H=1600
-HD_HIDPI=1        # 1 = Retina 2x（物理 5120×3200）
-CHECK_SECS=15     # 无高清模式时的渲染自检间隔
+HD_W=1920
+HD_H=1200
+HD_HIDPI=1        # 1 = Retina 2x（物理 3840×2400）
+ALWAYS_HD=1       # 1 = 开盖也保持 16:10；0 = 只在合盖时启用
+CHECK_SECS=15     # 兜底模式下的渲染自检间隔
 RENDER_MIN_BYTES=300000
 BLACK_TRIGGER=2
+HD_RETRY_SECS=12  # 虚拟屏创建失败后的重试间隔
 
 mkdir -p "$BIN_DIR" "$LOG_DIR" 2>/dev/null
 
@@ -52,7 +54,7 @@ log() { printf '%s  %s\n' "$(/bin/date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
 
 load_hd_conf() {
   [ -f "$HD_CONF" ] || return 0
-  local line w h d
+  local line w h d mode
   line="$(/usr/bin/grep -v '^[[:space:]]*#' "$HD_CONF" 2>/dev/null | /usr/bin/grep -v '^[[:space:]]*$' | /usr/bin/head -1)"
   [ -n "${line:-}" ] || return 0
   case "$line" in
@@ -61,10 +63,15 @@ load_hd_conf() {
   w="$(printf '%s' "$line" | /usr/bin/awk '{print $1}')"
   h="$(printf '%s' "$line" | /usr/bin/awk '{print $2}')"
   d="$(printf '%s' "$line" | /usr/bin/awk '{print $3}')"
+  mode="$(printf '%s' "$line" | /usr/bin/awk '{print $4}')"
   case "$w$h" in *[!0-9]*|"") return 0 ;; esac
   [ "$w" -ge 800 ] && [ "$h" -ge 600 ] || return 0
   HD_W="$w"; HD_H="$h"
   [ -n "${d:-}" ] && { [ "$d" = "0" ] && HD_HIDPI=0 || HD_HIDPI=1; }
+  case "${mode:-}" in
+    lidonly|lid|合盖) ALWAYS_HD=0 ;;
+    *) ALWAYS_HD=1 ;;
+  esac
   HD_ENABLED=1
 }
 
@@ -111,7 +118,7 @@ dim_screen() {
   cur="$(brightness)"
   if [ -z "$cur" ]; then
     if [ ! -f "$SAVED_BR" ]; then
-      if [ -s "$LAST_BR" ]; then /bin/cp -f "$LAST_BR" "$SAVED_BR" 2>/dev/null
+      if [ -s "$LAST_BR" ] && ! is_dark "$(/bin/cat "$LAST_BR")"; then /bin/cp -f "$LAST_BR" "$SAVED_BR" 2>/dev/null
       else /bin/echo "0.42" >"$SAVED_BR" 2>/dev/null; fi
     fi
     "$BIN_DIR/setbright" 0 >/dev/null 2>&1
@@ -124,22 +131,37 @@ dim_screen() {
 }
 
 restore_screen() {
-  local v i
+  local v i now
   [ -f "$SAVED_BR" ] || return 0
   v="$(/bin/cat "$SAVED_BR" 2>/dev/null)"
   for i in 1 2 3 4; do
     "$BIN_DIR/setbright" "$v" >/dev/null 2>&1
     /bin/sleep 0.3
-    local now; now="$(brightness)"
+    now="$(brightness)"
     [ -n "$now" ] && ! is_dark "$now" && break
   done
   log "开盖：内建屏背光已恢复为 ${v}"
   /bin/rm -f "$SAVED_BR"
 }
 
-# ── 高清投屏：建 HiDPI 虚拟屏 + 内建屏镜像过去 ─────────────────────
+# ── 高清投屏：建 16:10 HiDPI 虚拟屏 + 内建屏镜像过去 ────────────────
+stop_hd() {
+  local p
+  if [ -f "$HD_ACTIVE" ]; then
+    "$BIN_DIR/mirror" off >>"$LOG" 2>&1
+    /bin/sleep 0.5
+    log "已解除内建屏镜像"
+    /bin/rm -f "$HD_ACTIVE"
+  fi
+  p="$(/bin/cat "$VDISP_PIDFILE" 2>/dev/null)"
+  if [ -n "$p" ] && /bin/kill -0 "$p" 2>/dev/null; then
+    /bin/kill -9 "$p" 2>/dev/null   # vdisp 忽略 SIGTERM，必须 -9
+    log "已移除虚拟屏（pid=$p）"
+  fi
+  /bin/rm -f "$VDISP_PIDFILE" "$VDISP_IDFILE"
+}
+
 start_hd() {
-  [ "$HD_ENABLED" = "1" ] || return 1
   [ -x "$BIN_DIR/vdisp" ] && [ -x "$BIN_DIR/mirror" ] || { log "错误：缺少 vdisp/mirror，无法进入高清投屏"; return 1; }
   : >"$LOG_DIR/vdisp.out"
   "$BIN_DIR/vdisp" "$HD_W" "$HD_H" "$HD_HIDPI" >>"$LOG_DIR/vdisp.out" 2>&1 &
@@ -147,14 +169,14 @@ start_hd() {
   /bin/echo "$p" >"$VDISP_PIDFILE" 2>/dev/null
   /bin/sleep 3
   if ! /bin/kill -0 "$p" 2>/dev/null; then
-    log "合盖：虚拟屏创建失败，详见 $LOG_DIR/vdisp.out"
+    log "虚拟屏创建失败，详见 $LOG_DIR/vdisp.out"
     /bin/rm -f "$VDISP_PIDFILE"
     return 1
   fi
   local vid
   vid="$(/usr/bin/grep -o 'display=[0-9]*' "$LOG_DIR/vdisp.out" 2>/dev/null | /usr/bin/tail -1 | /usr/bin/cut -d= -f2)"
   if [ -z "${vid:-}" ]; then
-    log "合盖：拿不到虚拟屏 id，回退为只关背光"
+    log "拿不到虚拟屏 id，放弃本次高清投屏"
     /bin/kill -9 "$p" 2>/dev/null; /bin/rm -f "$VDISP_PIDFILE"
     return 1
   fi
@@ -162,30 +184,30 @@ start_hd() {
   if "$BIN_DIR/mirror" "$vid" >>"$LOG" 2>&1; then
     /bin/sleep 1
     /bin/echo "$vid" >"$HD_ACTIVE" 2>/dev/null
-    log "合盖：高清投屏已生效（虚拟屏 $((HD_W))×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理，内建屏已镜像过去，物理屏由系统关闭）"
+    log "高清投屏已生效（16:10 · ${HD_W}×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理，始终启用=${ALWAYS_HD}）"
     return 0
   fi
-  log "合盖：镜像失败，回退为只关背光（详见日志）"
+  log "镜像失败，放弃本次高清投屏（详见日志）"
   "$BIN_DIR/mirror" off >/dev/null 2>&1
   /bin/kill -9 "$p" 2>/dev/null
   /bin/rm -f "$VDISP_PIDFILE" "$VDISP_IDFILE"
   return 1
 }
 
-stop_hd() {
-  local p
+last_hd_try=0
+ensure_hd() {
+  [ "$HD_ENABLED" = "1" ] || return 1
   if [ -f "$HD_ACTIVE" ]; then
-    "$BIN_DIR/mirror" off >>"$LOG" 2>&1
-    /bin/sleep 0.5
-    log "开盖：已解除内建屏镜像"
-    /bin/rm -f "$HD_ACTIVE"
+    if vdisp_alive; then return 0; fi
+    log "虚拟屏进程消失了，清理残留镜像后重建"
+    "$BIN_DIR/mirror" off >/dev/null 2>&1
+    /bin/rm -f "$HD_ACTIVE" "$VDISP_IDFILE" "$VDISP_PIDFILE"
   fi
-  p="$(/bin/cat "$VDISP_PIDFILE" 2>/dev/null)"
-  if [ -n "$p" ] && /bin/kill -0 "$p" 2>/dev/null; then
-    /bin/kill -9 "$p" 2>/dev/null   # vdisp 忽略 SIGTERM，必须 -9
-    log "开盖：已移除虚拟屏（pid=$p）"
-  fi
-  /bin/rm -f "$VDISP_PIDFILE" "$VDISP_IDFILE"
+  local now
+  now="$(/bin/date +%s)"
+  if [ $(( now - last_hd_try )) -lt "$HD_RETRY_SECS" ]; then return 1; fi
+  last_hd_try=$now
+  start_hd
 }
 
 cleanup() {
@@ -214,9 +236,9 @@ cleanup_stale() {
 load_hd_conf
 cleanup_stale
 if [ "$HD_ENABLED" = "1" ]; then
-  log "合盖画面守护启动（盖子=$(clamshell)，当前亮度=$(brightness)，高清投屏 ${HD_W}×${HD_H} 逻辑 / $((HD_W*2))×$((HD_H*2)) 物理）"
+  log "合盖画面守护启动（盖子=$(clamshell)，亮度=$(brightness)，高清投屏 ${HD_W}×${HD_H}（16:10 → 物理 $((HD_W*2))×$((HD_H*2))），始终启用=$ALWAYS_HD）"
 else
-  log "合盖画面守护启动（盖子=$(clamshell)，当前亮度=$(brightness)，高清投屏已关闭，只关背光）"
+  log "合盖画面守护启动（盖子=$(clamshell)，亮度=$(brightness)，高清投屏已关闭，只关背光）"
 fi
 
 black_streak=0
@@ -224,55 +246,48 @@ black_streak=0
 while :; do
   rotate_log
   st="$(clamshell)"
-  if [ "$st" = "Yes" ]; then
-    # 先关背光（记录原始亮度）
-    if [ -f "$SAVED_BR" ]; then
-      cur="$(brightness)"
-      if [ -n "$cur" ] && ! is_dark "$cur"; then
-        "$BIN_DIR/setbright" 0 >/dev/null 2>&1
-        log "合盖：背光被调高到 $cur，已重新调回 0"
-      fi
-    else
-      dim_screen
-    fi
 
-    # 高清投屏（虚拟屏 + 内建屏镜像）
+  if [ "$st" = "Yes" ]; then
+    # ── 合盖：优先高清投屏（面板由镜像关系关掉），否则背光归零 ──
     if [ "$HD_ENABLED" = "1" ]; then
-      if [ -f "$HD_ACTIVE" ]; then
-        if ! vdisp_alive; then
-          log "合盖：虚拟屏进程消失了，清理残留镜像"
-          "$BIN_DIR/mirror" off >/dev/null 2>&1
-          /bin/rm -f "$HD_ACTIVE" "$VDISP_IDFILE"
+      ensure_hd || true
+    fi
+    if [ -f "$HD_ACTIVE" ]; then
+      :   # 高清投屏已接管：面板由系统关掉，无需再动背光
+    else
+      if [ -f "$SAVED_BR" ]; then
+        cur="$(brightness)"
+        if [ -n "$cur" ] && ! is_dark "$cur"; then
+          "$BIN_DIR/setbright" 0 >/dev/null 2>&1
+          log "合盖：背光被调高到 $cur，已重新调回 0"
         fi
       else
-        start_hd || black_streak=0
+        dim_screen
       fi
-    fi
-
-    # 兜底：高清投屏没生效时才做渲染自检
-    if [ ! -f "$HD_ACTIVE" ]; then
-      if vdisp_alive; then
-        :   # 之前的兜底虚拟屏还在
-      elif render_ok; then
+      if vdisp_alive; then :; elif render_ok; then
         black_streak=0
       else
         black_streak=$(( ${black_streak:-0} + 1 ))
-        log "合盖：渲染自检未通过（第 $black_streak 次），截图疑似纯黑"
+        log "合盖：渲染自检未通过（第 $black_streak 次）"
         if [ "$black_streak" -ge "$BLACK_TRIGGER" ]; then
           start_hd || true
           black_streak=0
         fi
       fi
     fi
-
     /bin/echo "closed" >"$STATE_FILE" 2>/dev/null
     /bin/sleep "$CHECK_SECS"
   else
-    if [ -f "$HD_ACTIVE" ] || vdisp_alive; then stop_hd; fi
-    [ -f "$SAVED_BR" ] && restore_screen
-    cur="$(brightness)" && [ -n "$cur" ] && /bin/echo "$cur" >"$LAST_BR" 2>/dev/null
+    # ── 开盖：默认保持 16:10（远程端比例一致）；lidonly 模式则复原 ──
+    if [ "$HD_ENABLED" = "1" ] && [ "$ALWAYS_HD" = "1" ]; then
+      ensure_hd || true
+    else
+      if [ -f "$HD_ACTIVE" ] || vdisp_alive; then stop_hd; fi
+      [ -f "$SAVED_BR" ] && restore_screen
+    fi
+    cur="$(brightness)" && [ -n "$cur" ] && ! is_dark "$cur" && /bin/echo "$cur" >"$LAST_BR" 2>/dev/null
     black_streak=0
     /bin/echo "open" >"$STATE_FILE" 2>/dev/null
-    /bin/sleep 1
+    /bin/sleep 3
   fi
 done
